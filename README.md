@@ -1,5 +1,5 @@
 ## Supervised Learning to Forecast Trends Based on Metadata from Scientific Literature
-**Master's in Bioinformatics & Biostatistics - UOC & UB**
+### **Master's in Bioinformatics & Biostatistics - UOC & UB**
 
 
 © Valeria Giraldo Carvajal

@@ -1,0 +1,1471 @@
+---
+title: "Master's thesis - Application of Machine Learning Methods to Forecast Trends Based on Metadata from Scientific Literature"
+author: "Valeria Giraldo Carvajal"
+date: "January 2023"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 2
+    toc_float:
+      collapsed: true
+      smooth_scroll: false
+    number_sections: true
+    theme: lumen
+    highlight: zenburn
+---
+
+```{r setup, include=FALSE}
+# setting up the preferences for all the chunks
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+# General introduction
+
+This RMarkdown file is an important part of a master's thesis in the context of the joint master's degree on Bioinformatics of Biostatistics of the University of Barcelona (UB) and the Open University of Catalonia (UOC). The present work is focused on researching whether trends in scientific literature could be effectively predicted using metadata obtained from scientific publications and machine learning.
+
+The ultimate goal of the project is to evaluate whether metadata present in a pool of scientific publications can be useful to forecast trends within a certain field. In the scope of this project, the topic of gene and genome editing has been selected as a case study and Scopus as a scientific database. In this context, the dataset to study will contain scientific metadata from a pool of documents mentioning gene and genome editing.
+
+## Objective of this RMarkdown
+
+All the data- and modelling-related work of the project is explained and presented in this file. The idea of this file is to standardize the code so that it can be applied to different data sets.
+
+# Extracting the scientific literature pool and preprocessing the database
+
+This first section is focused on obtaining a scientific literature pool from Scopus. For this reason and to extract all the relevant scientific metadata available from Scopus, the Scopus API is used. More details on the Scopus API are given below. Beyond that, for future case studies, it is important to highlight the fact that having some basic knowledge on advanced querying in Scopus is required. For more information, it is recommended to access [Scopus - Advanced searches](https://www.scopus.com/search/form.uri?display=advanced).
+
+## Preparing the R environment
+
+The first step is to define the working directory of the project. This is done below:
+
+```{r}
+# define working directory
+# setwd("")
+
+# check that working directory is correct
+# getwd()
+```
+
+Then, we must install or load the packages needed and set the paths to the relevant directories. For obtaining the scientific literature pool the packages "XLM" and "httr" are needed. The chunk below implements a conditional loop where if the packages are not installed yet, then they are first installed, and once all are installed they are loaded into the R environment.
+
+```{r}
+
+# define the list of packages to download or to load
+package_list <- c(
+  "rscopus",
+  "XML",
+  "httr",
+  "stringr",
+  "rpart", 
+  "rpart.plot",
+  "rattle",
+  "RColorBrewer",
+  "ggplot2",
+  "dplyr",
+  "readxl",
+  "DataExplorer",
+  "vtree",
+  "crosstable",
+  "caret",
+  "kernlab",
+  "randomForest",
+  "pscl",
+  "dplyr",
+  "MASS",
+  "pROC",
+  "descr",
+  "rminer"
+)
+# loop to download new packages and then load all of the packages from the list
+for (p in package_list) {
+  if (p %in% installed.packages() == FALSE) {
+    install.packages(p, dependencies = TRUE)
+  }
+  library(p, character.only = TRUE)
+}
+
+```
+
+## Using the Scopus Search API
+
+First of all, it is important to remark that an API key is needed in order to use the Scopus API. All users with Scopus subscriptions are given an API key associated to their account. This allows you to download larger datasets from Scopus. An API key can be requested in the [Elsevier Developer Portal](https://dev.elsevier.com/).
+
+Once that has been clarified, it is time to save the advance Scopus query to gather the scientific literature pool related to the selected case study. As explained before, in this case, it is focused on gene/genome editing.
+
+After it has been defined, we must run the query using the "Scopus Search API" through the aforementioned package RScopus.
+
+In this step, we obtain raw data with extra added information in it. The idea is that once the raw data (with the added metadata) has been extracted, it can be converted into a data frame for further processing in R.
+
+As explained by [Christopher Belter](https://github.com/christopherBelter/scopusAPI), there are some API limits one must be aware of:
+
+-   If you want to download the full records of your search results (inlcuding the full author list and abstract for each document), you are limited to requesting 25 articles at a time.
+
+-   You can only request the first 5,000 records using the 'offset' parameter. This used to mean that you could only request up to 5,000 records for a single search string, but Elsevier has added a new 'cursor' parameter that allows you to bypass this limit.
+
+-   You are limited to downloading 20,000 records per week.
+
+### Defining the advanced search query
+
+The search query on the selected case study about gene/genome editing must be now defined. Taking into account the limitations of the Scopus API and the fact that the total query had \~30000 document results, it has been divided in two parts. These two parts are split depending on the Scopus ID of the publications, which is a reasonably evenly distributed parameter, which means that around half of the results are covered by the first part of the query and the other half by the second part. Beyond that, some noise has been excluded from the pool (e.g. general editor, generic edition).
+
+```{r}
+# save the search query you to use
+# part 1 of the query
+myQuery <- '(TITLE-ABS-KEY("gen* edit*") AND NOT TITLE-ABS-KEY("general edit*" OR "generic edit*" OR "genuine edit*")) AND EID(*0 OR *1 OR *2 OR *3 OR *4)'
+
+# part 2 of the query
+myQuery2 <- '(TITLE-ABS-KEY("gen* edit*") AND NOT TITLE-ABS-KEY("general edit*" OR "generic edit*" OR "genuine edit*")) AND EID(*5 OR *6 OR *7 OR *8 OR *9)'
+
+```
+
+Now the Scopus query has been succesfully defined.
+
+### Running the advanced Scopus search through the Scopus API
+
+To run the advanced Scopus search through the API the method "searchByString()" designed by Christopher Belter is used.
+
+The "searchByString()" function allows you to run an advanced search through the API and download all of the search results. The "searchByString()" function automatically sends multiple requests to the API to retrieve the full set of search results for your particular query. However, as mentioned before, it can only retrieve 25 full records at a time. It is a function with eight arguments: string, content, myStart, retCount, retMax, mySort, cursor, and outfile. For more details regarding the arguments, please access the [Christopher Belter's GitHub](https://github.com/christopherBelter/scopusAPI).
+
+The output of the "searchByString()" is an XML file. For this, the "extractXML()" function also designed by Christopher Balter is very useful. This function converts the output XML file into a data frame. The original "extractXML()" function proposed by Christopher Balter has been adapted in the scope of this project. That has been done to extract more metadata (from the output XML) than the initially proposed in the original function.
+
+Before running any searches, the functions "searchByString()" and "extractXML()" must be defined. The personal Scopus API key must be incorporated in the variable "key".
+
+```{r}
+# define searchByString
+# version 0.4 of the function defined by Christopher Belter
+searchByString <- function(string, content = "complete", myStart = 0, retCount = 25, retMax = Inf, mySort = "-coverDate", cursor = "*", outfile) {
+	if (!content %in% c("complete", "standard")) {
+		stop("Invalid content value. Valid content values are 'complete', and 'standard'")
+	}
+	else {
+		key <- "55fe4bf5db6afca7a17bde084e5dc77a"
+		print("Retrieving records.")
+		theURL <- httr::GET("https://api.elsevier.com/content/search/scopus", query = list(apiKey = key, query = string, sort = mySort, httpAccept = "application/xml", view = content, count = retCount, start = myStart, cursor = cursor)) ## format the URL to be sent to the API
+		httr::stop_for_status(theURL) ## pass any HTTP errors to the R console
+		theData <- httr::content(theURL, as = "text") ## extract the content of the response
+		newData <- XML::xmlParse(theURL) ## parse the data to extract values
+		resultCount <- as.numeric(XML::xpathSApply(newData,"//opensearch:totalResults", XML::xmlValue)) ## get the total number of search results for the string
+		cursor <- XML::xpathSApply(newData, "//cto:cursor", XML::xmlGetAttr, name = "next", namespaces = "cto")
+		print(paste("Found", resultCount, "records."))
+		retrievedCount <- retCount + myStart ## set the current number of results retrieved for the designated start and count parameters
+		while (resultCount > retrievedCount && retrievedCount < retMax) { ## check if it's necessary to perform multiple requests to retrieve all of the results; if so, create a loop to retrieve additional pages of results
+			myStart <- myStart + retCount ## add the number of records already returned to the start number
+			print(paste("Retrieved", retrievedCount, "of", resultCount, "records. Getting more."))
+			theURL <- httr::GET("https://api.elsevier.com/content/search/scopus", query = list(apiKey = key, query = string,  sort = mySort, httpAccept = "application/xml", view = content, count = retCount, cursor = cursor)) ## get the next page of results
+			theData <- paste(theData, httr::content(theURL, as = "text")) ## paste new theURL content to theData; if there's an HTTP error, the XML of the error will be pasted to the end of theData
+			newData <- httr::content(theURL, as = "text")
+			newData <- XML::xmlParse(theURL)
+			cursor <- XML::xpathSApply(newData, "//cto:cursor", XML::xmlGetAttr, name = "next", namespaces = "cto")
+			if (httr::http_error(theURL) == TRUE) { ## check if there's an HTTP error
+				print("Encountered an HTTP error. Details follow.") ## alert the user to the error
+				print(httr::http_status(theURL)) ## print out the error category, reason, and message
+				break ## if there's an HTTP error, break out of the loop and return the data that has been retrieved
+				}
+			retrievedCount <- retrievedCount + retCount ## add the number of results retrieved in this iteration to the total number of results retrieved
+			Sys.sleep(1)
+		} ## repeat until retrievedCount >= resultCount
+		print(paste("Retrieved", retrievedCount, "records. Formatting and saving results."))
+		writeLines(theData, outfile, useBytes = TRUE) ## if there were multiple pages of results, they come back as separate XML files pasted into the single outfile; the theData XML object can't be coerced into a string to do find/replace operations, so I think it must be written to a file and then reloaded; useBytes = TRUE keeps the UTF-8 encoding of special characters like the copyright symbol so they won't throw an error later
+		theData <- readChar(outfile, file.info(outfile)$size) ## convert the XML results to a character vector of length 1 that can be manipulated
+		theData <- gsub("<?xml version=\"1.0\" encoding=\"UTF-8\"?>", "", theData, fixed = TRUE, useBytes = TRUE)
+		theData <- gsub("<search-results.+?>", "", theData, useBytes = TRUE)
+		theData <- gsub("</search-results>", "", theData, fixed = TRUE) ## remove all headers and footers of the separate XML files
+		theData <- paste("<?xml version=\"1.0\" encoding=\"UTF-8\"?>", "<search-results xmlns=\"http://www.w3.org/2005/Atom\" xmlns:cto=\"http://www.elsevier.com/xml/cto/dtd\" xmlns:atom=\"http://www.w3.org/2005/Atom\" xmlns:prism=\"http://prismstandard.org/namespaces/basic/2.0/\" xmlns:opensearch=\"http://a9.com/-/spec/opensearch/1.1/\" xmlns:dc=\"http://purl.org/dc/elements/1.1/\">", theData, "</search-results>", sep = "\n")
+		#theData <- paste(theData, "</search-results>") ## add the correct header to the beginning of the file and the correct footer to the end of the file
+		writeLines(theData, outfile, useBytes = TRUE) ## save the correctly formatted XML file
+		print("Done")
+		return(theData) ## return the final, correctly formatted XML file
+	}
+}
+
+
+# define the adapted version of the extractXML function from Christopher Belter
+
+extractXML_adapted <- function(theFile) {
+	newData <- XML::xmlParse(theFile) ## parse the XML
+	records <- XML::getNodeSet(newData, "//cto:entry", namespaces = "cto") ## create a list of records for missing or duplicate node handling
+	scopusID <- lapply(records, XML::xpathSApply, "./cto:eid", XML::xmlValue, namespaces = "cto") ## handle potentially missing eid nodes
+	scopusID[sapply(scopusID, is.list)] <- NA
+	scopusID <- unlist(scopusID)
+	doi <- lapply(records, XML::xpathSApply, "./prism:doi", XML::xmlValue, namespaces = c(prism = "http://prismstandard.org/namespaces/basic/2.0/")) ## handle potentially missing doi nodes
+	doi[sapply(doi, is.list)] <- NA
+	doi <- unlist(doi)
+	pmid <- lapply(records, XML::xpathSApply, "./cto:pubmed-id", XML::xmlValue, namespaces = "cto") ## handle potentially missing pmid nodes: returns a list with the node value if the node is present and an empty list if the node is missing
+	pmid[sapply(pmid, is.list)] <- NA ## find the empty lists in pmid and set them to NA
+	pmid <- unlist(pmid) ## turn the pmid list into a vector
+	authLast <- lapply(records, XML::xpathSApply, ".//cto:surname", XML::xmlValue, namespaces = "cto") ## grab the surname and initials for each author in each record, then paste them together 
+	authLast[sapply(authLast, is.list)] <- NA
+	authInit <- lapply(records, XML::xpathSApply, ".//cto:initials", XML::xmlValue, namespaces = "cto")
+	authInit[sapply(authInit, is.list)] <- NA
+	authors <- mapply(paste, authLast, authInit, collapse = "|")
+	authors <- sapply(strsplit(authors, "|", fixed = TRUE), unique) ## remove the duplicate author listings
+	authors <- sapply(authors, paste, collapse = "|")
+	affiliations <- lapply(records, XML::xpathSApply, ".//cto:affilname", XML::xmlValue, namespaces = "cto") ## handle multiple affiliation names
+	affiliations[sapply(affiliations, is.list)] <- NA
+	affiliations <- sapply(affiliations, paste, collapse = "|")
+	affiliations <- sapply(strsplit(affiliations, "|", fixed = TRUE), unique) ## remove the duplicate affiliation listings
+	affiliations <- sapply(affiliations, paste, collapse = "|")
+	countries <- lapply(records, XML::xpathSApply, ".//cto:affiliation-country", XML::xmlValue, namespaces = "cto")
+	countries[sapply(countries, is.list)] <- NA
+	countries <- sapply(countries, paste, collapse = "|")
+	countries <- sapply(strsplit(countries, "|", fixed = TRUE), unique) ## remove the duplicate country listings
+	countries <- sapply(countries, paste, collapse = "|") 
+	year <- lapply(records, XML::xpathSApply, "./prism:coverDate", XML::xmlValue, namespaces = c(prism = "http://prismstandard.org/namespaces/basic/2.0/"))
+	year[sapply(year, is.list)] <- NA
+	year <- unlist(year)
+	year <- gsub("\\-..", "", year) ## extract only year from coverDate string (e.g. extract "2015" from "2015-01-01")
+	articletitle <- lapply(records, XML::xpathSApply, "./dc:title", XML::xmlValue, namespaces = c(dc = "http://purl.org/dc/elements/1.1/"))
+	articletitle[sapply(articletitle, is.list)] <- NA
+	articletitle <- unlist(articletitle)
+	journal <- lapply(records, XML::xpathSApply, "./prism:publicationName", XML::xmlValue, namespaces = c(prism = "http://prismstandard.org/namespaces/basic/2.0/")) ## handle potentially missing issue nodes
+	journal[sapply(journal, is.list)] <- NA
+	journal <- unlist(journal)
+	volume <- lapply(records, XML::xpathSApply, "./prism:volume", XML::xmlValue, namespaces = c(prism = "http://prismstandard.org/namespaces/basic/2.0/")) ## handle potentially missing issue nodes
+	volume[sapply(volume, is.list)] <- NA
+	volume <- unlist(volume)
+	issue <- lapply(records, XML::xpathSApply, "./prism:issueIdentifier", XML::xmlValue, namespaces = c(prism = "http://prismstandard.org/namespaces/basic/2.0/")) ## handle potentially missing issue nodes
+	issue[sapply(issue, is.list)] <- NA
+	issue <- unlist(issue)
+	pages <- lapply(records, XML::xpathSApply, "./prism:pageRange", XML::xmlValue, namespaces = c(prism = "http://prismstandard.org/namespaces/basic/2.0/")) ## handle potentially missing issue nodes
+	pages[sapply(pages, is.list)] <- NA
+	pages <- unlist(pages)
+	abstract <- lapply(records, XML::xpathSApply, "./dc:description", XML::xmlValue, namespaces = c(dc = "http://purl.org/dc/elements/1.1/")) ## handle potentially missing abstract nodes
+	abstract[sapply(abstract, is.list)] <- NA
+	abstract <- unlist(abstract)
+	keywords <- lapply(records, XML::xpathSApply, "./cto:authkeywords", XML::xmlValue, namespaces = "cto")
+	keywords[sapply(keywords, is.list)] <- NA
+	keywords <- unlist(keywords)
+	keywords <- gsub(" | ", "|", keywords, fixed = TRUE)
+	timescited <- lapply(records, XML::xpathSApply, "./cto:citedby-count", XML::xmlValue, namespaces = "cto")
+	timescited[sapply(timescited, is.list)] <- NA
+	timescited <- unlist(timescited)
+	# extra metadata parameters added
+	# eISSN
+	eIssn <- lapply(records, XML::xpathSApply, "./prism:eIssn", XML::xmlValue, namespaces = c(prism = "http://prismstandard.org/namespaces/basic/2.0/")) ## handle potentially missing nodes
+	eIssn[sapply(eIssn, is.list)] <- NA
+	eIssn <- unlist(eIssn)
+	# ISSN
+	issn <- lapply(records, XML::xpathSApply, "./prism:issn", XML::xmlValue, namespaces = c(prism = "http://prismstandard.org/namespaces/basic/2.0/")) ## handle potentially missing nodes
+	issn[sapply(issn, is.list)] <- NA
+	issn <- unlist(issn)
+	# identifier
+	identifier <- lapply(records, XML::xpathSApply, "./dc:identifier", XML::xmlValue, namespaces = c(dc = "http://purl.org/dc/elements/1.1/")) ## handle potentially missing nodes
+	identifier[sapply(identifier, is.list)] <- NA
+	identifier <- unlist(identifier)
+	# funding sponsor
+	fundsponsor <- lapply(records, XML::xpathSApply, "./cto:fund-sponsor", XML::xmlValue, namespaces = "cto") ## handle potentially missing nodes
+	fundsponsor[sapply(fundsponsor, is.list)] <- NA
+	fundsponsor <- unlist(fundsponsor)
+	# funding number
+	fundno <- lapply(records, XML::xpathSApply, "./cto:fund-no", XML::xmlValue, namespaces = "cto") ## handle potentially missing nodes
+	fundno[sapply(fundno, is.list)] <- NA
+	fundno <- unlist(fundno)
+	# open access
+	openaccess <- lapply(records, XML::xpathSApply, "./cto:openaccessFlag", XML::xmlValue, namespaces = "cto") ## handle potentially missing nodes
+	openaccess[sapply(openaccess, is.list)] <- NA
+	openaccess <- unlist(openaccess)
+	
+	# author count
+  authorcount <- lapply(records, XML::xpathSApply, "./cto:author-count", XML::xmlValue, namespaces = "cto")
+  authorcount[sapply(authorcount, is.list)] <- NA
+  authorcount <- unlist(authorcount)
+	
+
+  # type of publication
+  pubtype <- lapply(records, XML::xpathSApply, "./cto:subtypeDescription", XML::xmlValue, namespaces = "cto") ## handle potentially missing nodes
+  pubtype[sapply(pubtype, is.list)] <- NA
+  pubtype <- unlist(pubtype)
+  # URL
+  url <- lapply(records, XML::xpathSApply, "./prism:url", XML::xmlValue, namespaces = c(prism = "http://prismstandard.org/namespaces/basic/2.0/")) ## handle potentially missing nodes
+  url[sapply(url, is.list)] <- NA
+  url <- unlist(url)
+  
+  # author IDs  
+  authids <- lapply(records, XML::xpathSApply, ".//cto:authid", XML::xmlValue, namespaces = "cto") 
+	authids[sapply(authids, is.list)] <- NA
+	authids <- sapply(authids, paste, collapse = "|")
+	authids <- sapply(strsplit(authids, "|", fixed = TRUE), unique) ## remove the duplicate affiliation listings
+	authids <- sapply(authids, paste, collapse = "|")
+	
+	# orcids
+	orcid <- lapply(records, XML::xpathSApply, ".//cto:orcid", XML::xmlValue, namespaces = "cto") 
+	orcid[sapply(orcid, is.list)] <- NA
+	orcid <- sapply(orcid, paste, collapse = "|")
+	orcid <- sapply(strsplit(orcid, "|", fixed = TRUE), unique)
+	orcid <- sapply(orcid, paste, collapse = "|")
+
+	# create the final data frame
+  theDF <- data.frame(articletitle, keywords, abstract, scopusID, identifier, doi, pmid, url, pubtype, openaccess, year, timescited, journal, volume, issue, pages, authors, authids, orcid, authorcount, affiliations, countries, fundsponsor, fundno, eIssn, issn, stringsAsFactors = FALSE)
+                    
+	
+	return(theDF)
+}
+```
+
+Once both functions have been defined, it is the moment to run the search. Since the search takes time and has an impact on the Scopus quota, the code linked to it has been commented. Next to this file, two other XML files containing the output of the search are attached. They are called, respectively, "testdata.xml" and "testdata2.xml".
+
+```{r}
+# for part 1 of the query
+# -----------------------
+# run the searchByString function
+# theXML <- searchByString(string = myQuery, content = "complete", outfile = "testdata.xml")
+# extract the XML
+theData <- extractXML_adapted("testdata.xml")
+
+# for part 2 of the query
+# -----------------------
+# run the searchByString function
+# theXML <- searchByString(string = myQuery2, content = "complete", outfile = "testdata.xml")
+# extract the XML
+theData2 <- extractXML_adapted("testdata2.xml")
+```
+
+Once the two parts of the Scopus query have been downloaded, they need to be merged in a single data frame.
+
+```{r}
+# merge two dataframes
+AllTheData <- rbind(theData,theData2)
+AllTheData2 <- rbind(theData,theData2)
+```
+
+After the full data set has been converted to a data frame, it is interesting to see the initial values of it, to have a look at its structure. An example is shown below:
+
+```{r}
+head(AllTheData)
+```
+
+At this point, the data frame contains 27 parameters obtained from the metadata of each scientific publication in the pool.
+
+## Data base pre-processing
+
+Initially, it is important to make a data conversion. Quite some data that appears as "NA" is coming from eISSN, abstract, volume and other metadata extracted directly from Scopus. In fact, this data is not missing, it is just not present. For example, certain publications may not have an abstract, but this does not mean the abstract is missing, there is just none. For this reason, all of the NAs from the Scopus initial metadata are set as 0 instead.
+
+```{r}
+AllTheData[is.na(AllTheData)] <- 0
+```
+
+We also can calculate some extra metrics that could contribute in the predictions: title length, abstract length, the ratio of citations per year for the total years the document has been published, the number of keywords and the number of affiliations.
+
+```{r}
+
+# obtaining title and abstract length
+# calculate lengths and append them to the full dataset
+calculate_length <- function(x){
+  if(x == 0){
+    0
+  } else {
+    str_length(x)
+  }
+}
+
+
+# calculate title length and append to the dataset
+AllTheData[c("title_length")] <- mapply(calculate_length,AllTheData$articletitle)
+
+# calculate abstract length and append to the dataset
+AllTheData[c("abstract_length")] <- mapply(calculate_length,AllTheData$abstract)
+
+# calculate the ratio of citations per year
+# define the citations and the year as numeric values
+AllTheData$timescited <- as.numeric(AllTheData$timescited)
+AllTheData$year <- as.numeric(AllTheData$year)
+# define a function that calculates ratio of citations per year
+calculate_ratio_citations <- function(x,y) {
+  x/(2023.1-y)
+}
+# calculate the ratios and append them to the full dataset
+AllTheData[c("ratio_citations")] <- mapply(calculate_ratio_citations,AllTheData$timescited,AllTheData$year)
+# round the number of decimal values for the citation ratio
+AllTheData$ratio_citations <- round(AllTheData$ratio_citations, digits=3)
+
+# calculate the number of keywords and number of affiliations
+# define a function that calculates the number of keywords "|"
+calculate_number_bars <- function(x){
+  if(x == 0){
+    0
+  } else {
+    1+str_count(x, fixed("|"))
+  }
+}
+# calculate the number of keywords and append them to the full dataset
+AllTheData[c("number_keywords")] <- mapply(calculate_number_bars,AllTheData$keywords)
+
+# calculate the number of affiliations and append them to the full dataset
+AllTheData[c("number_affiliations")] <- mapply(calculate_number_bars,AllTheData$affiliations)
+
+```
+
+Beyond the data frame obtained via the Scopus API, the impact factor of the journal where each article has been published could also be added to the total data frame, searching it based on the ISSN of the journals.
+
+Initially, it is necessary to read the information from the previously generated Excel file (obtained from web scraping, outside of the scope of this project) containing the data and metrics from \>48000 academic journals.
+
+```{r}
+# reading the previously generated Excel file containing journal information and metrics
+JournalInfo <- read_excel("./Journals.xlsx",sheet = "Overview")
+```
+
+Once the journal information is present in the R environment, it is time to append the columns with the impact score, the h-Index, the SJR and the overall ranking of the journals based on the ISSN number from the initial data frame containing all the publications in the pool.
+
+```{r}
+# merge two data frames by ID
+AllTheData <- merge(AllTheData,JournalInfo,by="issn")
+```
+
+Once all the parameters extracted from the metadata are present in the data set, it is the moment to structure them better.
+
+```{r}
+# let's reorder the column names
+col_order <- c("articletitle", "keywords", "abstract", "scopusID", "identifier", "doi", "pmid", "url", "pubtype", "openaccess", "year", "timescited", "journal", "volume", "issue", "pages", "authors", "authids", "orcid", "authorcount", "affiliations", "countries", "fundsponsor", "fundno", "eIssn", "issn", "journal_title", "journal_type",	"journal_impact_score",	"journal_h_index",	"journal_sjr",	"journal_overall_ranking", "title_length", "abstract_length", "ratio_citations", "number_keywords", "number_affiliations")
+AllTheData <- AllTheData[, col_order]
+
+# drop the journal-title column, since it is repeated
+AllTheData <- subset(AllTheData, select = -c(27))
+
+```
+
+Once this step has been completed, the extraction of the scientific literature pool, containing all relevant metadata, and also the data base preprocessing are ready.
+
+# Exploratory data analysis
+
+The next step is doing the exploratory data analysis throughout the data set. The exploratory data analysis is the process to get to know your data, so that you can generate and test your hypothesis.
+
+Let's first get introduced to the complete data set.
+
+```{r}
+# check features of the data set
+introduce(AllTheData)
+plot_intro(AllTheData)
+```
+
+If we observe the introductory plot, for the gene/genome editing pool the following can be said:
+
+-   There is an 92.56% of complete rows, which means that only 92.56% of all rows are not completely missing.
+-   There is a 0.94% of missing observations. This means that given the 18.1% of complete rows, there are only 10.8% missing observations.
+
+## Missing values
+
+Since missing values can create problems, it is important to look at the missing profiles.
+
+The following plot shows the missing profile for each feature in the data set.
+
+```{r}
+# plot the missing data
+plot_missing(AllTheData)
+```
+
+From the chart, journal-related data are the most often missed, which the highest value being the journal SJR index (\~7.44% missing values).
+
+## Distributions
+
+### Bar charts
+
+Next, visualizing the distributions of the discrete features in the data set is a neccessary step.
+
+```{r}
+plot_bar(AllTheData)
+```
+
+### Histograms
+
+Let's visualize distributions for the continuous features.
+
+```{r}
+plot_histogram(AllTheData)
+```
+
+## Correlation Analysis
+
+To visualize correlation heatmap for all non-missing features:
+
+```{r}
+plot_correlation(na.omit(AllTheData), maxcat = 5L)
+# plot_correlation(AllTheData, maxcat = 5L)
+```
+
+## Principal Component Analysis
+
+```{r}
+plot_prcomp(na.omit(AllTheData)) 
+```
+
+# Generating subset focused on technologies
+
+It is time to create a dataset focused on the main gene/genome editing technologies identified.
+
+```{r}
+# reading the Excel file generated from Mynd containing the categorization on technologies and the recency
+MyndInfo <- read_excel("./Mynd-Technologies_All.xlsx",sheet = "Technologies")
+```
+
+Then, the data frame containing the information from Mynd can be appended to the full data frame.
+
+```{r}
+# merge two data frames by ID
+TechnologyData <- merge(AllTheData,MyndInfo,by="identifier")
+```
+
+Let's make a subset for the relevant parameters:
+
+```{r}
+# select only the relevant parameters
+TechnologyData_Subset <- subset(TechnologyData, select = c("identifier", "pubtype", "openaccess", "year", "timescited", "authorcount",	"journal_impact_score",	"journal_h_index",	"journal_sjr",	"journal_overall_ranking", "title_length", "abstract_length", "ratio_citations", "number_keywords", "number_affiliations", "technology", "tech_recency_corrected"))
+
+```
+
+Let's see how much data is missing now:
+
+```{r}
+# check features of the data set
+introduce(TechnologyData_Subset)
+plot_intro(TechnologyData_Subset)
+```
+
+```{r}
+# plot the missing data
+plot_missing(TechnologyData_Subset)
+```
+
+For practical reasons, in the context of this project all of the NAs in the working subset are removed.
+
+```{r}
+# omit NAs in the subset
+TechnologyData_Subset <- na.omit(TechnologyData_Subset) 
+
+# set the author count as numeric and other parameters as factors
+TechnologyData_Subset$authorcount <- as.numeric(TechnologyData_Subset$authorcount)
+TechnologyData_Subset$pubtype <- as.factor(TechnologyData_Subset$pubtype)
+TechnologyData_Subset$openaccess <- as.factor(TechnologyData_Subset$openaccess)
+TechnologyData_Subset$technology <- as.factor(TechnologyData_Subset$technology)
+TechnologyData_Subset$tech_recency_corrected <- as.factor(TechnologyData_Subset$tech_recency_corrected)
+```
+
+Let's look at the type of data for each parameter in the technology subset:
+
+```{r}
+# type of data for each parameter
+str(TechnologyData_Subset)
+```
+
+Let's look at the technologies present within the new data set:
+
+```{r}
+vtree(TechnologyData_Subset, "technology", palette = 2)
+```
+
+## Exploratory data analysis on the working subset
+
+Finally, an exploratory data analysis is run on the technology subset generated.
+
+### Distributions
+
+### Bar charts
+
+Next, visualizing the distributions of the discrete features in the data set is a necessary step.
+
+```{r}
+plot_bar(TechnologyData_Subset)
+```
+
+### Histograms
+
+Let's visualize distributions for the continuous features.
+
+```{r}
+plot_histogram(TechnologyData_Subset)
+```
+
+### Univariate analysis for variables of interest
+
+```{r}
+correct_order_tech <- c("CRISPR-Cas9", "CRISPR-Cas12", "CRISPR-Cas13", 
+            "TALENs", "Zinc-Fingers", "Other")
+
+p <- ggplot(TechnologyData_Subset, aes(x = factor(technology, correct_order_tech), y=year)) + 
+  geom_boxplot(fill='#00BFC4', color='#009296') +
+  labs(x = 'Technology') +
+  ggtitle("Recency ~ Technology ") +
+  theme_bw() +
+  theme(axis.text.x = element_text(face = 'bold', size = 9),
+        axis.text.y = element_text(face = 'bold', size = 9)) +
+  guides(fill=guide_legend(title="Recency")) + labs(y = "Publication year")
+
+p
+```
+
+```{r}
+
+q <- ggplot(TechnologyData_Subset, aes(x = tech_recency_corrected, y=year)) + 
+  geom_boxplot(fill='#00BFC4', color='#009296') +
+  labs(x = 'Recency') +
+  theme_bw() +
+  theme(axis.text.x = element_text(face = 'bold', size = 9),
+        axis.text.y = element_text(face = 'bold', size = 9)) + labs(y = "Publication year")
+
+q
+```
+
+### Bivariate analysis for variables of interest
+
+```{r}
+crosstab(TechnologyData_Subset$tech_recency_corrected, TechnologyData_Subset$technology,
+         expected = TRUE,
+         prop.c = TRUE,
+         prop.t = TRUE,
+         resid = TRUE,
+         format = "SPSS",
+         percent = TRUE,
+         xlab = "Technology",
+         ylab = "Recency",
+         plot = TRUE,
+         col=c("cyan2","goldenrod1"),
+         border="gray23")
+```
+
+```{r}
+crosstab(TechnologyData_Subset$tech_recency_corrected, TechnologyData_Subset$openaccess,
+         expected = TRUE,
+         prop.c = TRUE,
+         prop.t = TRUE,
+         resid = TRUE,
+         format = "SPSS",
+         percent = TRUE,
+         xlab = "Is the publication open access?",
+         ylab = "Recency",
+         plot = TRUE,
+         col=c("cyan2","goldenrod1"),
+         border="gray23")
+```
+
+```{r}
+crosstab(TechnologyData_Subset$tech_recency_corrected, TechnologyData_Subset$pubtype,
+         expected = TRUE,
+         prop.c = TRUE,
+         prop.t = TRUE,
+         resid = TRUE,
+         format = "SPSS",
+         percent = TRUE,
+         xlab = "Type of publication",
+         ylab = "Recency",
+         plot = TRUE,
+         col=c("cyan2","goldenrod1"),
+         border="gray23")
+```
+
+### Correlation Analysis
+
+To visualize correlation heatmap for all non-missing features:
+
+```{r}
+plot_correlation(na.omit(TechnologyData_Subset), type="all", maxcat = 15L, ggtheme=theme_minimal(base_size = 7.5, base_family = ""))
+```
+
+Beyond that, it is important to show how the recency and the technology variables are correlated:
+
+```{r}
+# ggplot(TechnologyData_Subset) +
+#   geom_bar(aes(x = technology, 
+#                    fill = tech_recency_corrected)) +
+#   labs(x = 'Technology') +
+#   ggtitle("Recency ~ Technology ") +
+#   theme_bw() +
+#   theme(axis.text.x = element_text(face = 'bold', size = 9),
+#         axis.text.y = element_text(face = 'bold', size = 9)) +
+#   guides(fill=guide_legend(title="Recency")) + labs(y = "# of publications")
+
+correct_order_tech <- c("CRISPR-Cas9", "CRISPR-Cas12", "CRISPR-Cas13", 
+            "TALENs", "Zinc-Fingers", "Other")
+
+
+
+ggplot(TechnologyData_Subset) +
+  geom_bar(aes(x = factor(technology, correct_order_tech),
+                   fill = tech_recency_corrected)) +
+  labs(x = 'Technology') +
+  ggtitle("Recency ~ Technology ") +
+  theme_bw() +
+  theme(axis.text.x = element_text(face = 'bold', size = 9),
+        axis.text.y = element_text(face = 'bold', size = 9)) +
+  guides(fill=guide_legend(title="Recency")) + labs(y = "# of publications")
+```
+
+### Principal Component Analysis
+
+```{r}
+plot_prcomp(na.omit(TechnologyData_Subset)) 
+```
+
+As shown in the analysis, the fact that 15 principal components explain around 80% of the variance means that it is not possible to rank these components in order of importance. In other words, it seems that all of them are equally important and therefore, all of them need to be considered in further steps.
+
+Now it is time to adjust the supervised learning methods to the data set.
+
+# Forecasting trends through supervised learning algorithms
+
+## Separating between training and testing data sets
+
+Before applying the supervised learning algorithms on the final data set, the latter has to be divided in two parts: one that will serve as a training for the model, and the other one, which will serve to test the models' precision and fit.
+
+```{r}
+# we set a random seed
+set.seed(123)
+
+# exclude the identifiers from the dataset, since they are no longer needed
+TechnologyData_Subset <- subset(TechnologyData_Subset, select = -c(1))
+
+# divide the data set in train and test with the "sample" function
+data_partition<-sample(c(rep(0, 0.8*nrow(TechnologyData_Subset)),rep(1, 0.2*nrow(TechnologyData_Subset))))
+data_train<-TechnologyData_Subset[data_partition == 0,]
+data_test<-TechnologyData_Subset[data_partition == 1,]
+
+# remove any further NAs just in case
+data_train <- na.omit(data_train)
+data_test <- na.omit(data_test)
+```
+
+## Classification and regression tree (CART)
+
+First, we start adjusting a classification and regression tree.
+
+```{r}
+# https://www.statology.org/classification-and-regression-trees-in-r/
+# https://www.statmethods.net/advstats/cart.html
+
+# we set the seed
+set.seed(123)
+
+# step1: Begin with a small cp. 
+tree <- rpart(tech_recency_corrected~., data = data_train, method = "class",
+              control = rpart.control(cp = 0.0001), usesurrogate=2, surrogatestyle=0)
+
+# step2: Pick the tree size that minimizes misclassification rate (i.e. prediction error).
+# Prediction error rate in training data = Root node error * rel error * 100%
+# Prediction error rate in cross-validation = Root node error * xerror * 100%
+# Hence we want the cp value (with a simpler tree) that minimizes the xerror. 
+printcp(tree)
+plotcp(tree)
+
+# select the best tree
+bestcp <- tree$cptable[which.min(tree$cptable[,"xerror"]),"CP"]
+
+# step3: Prune the tree using the best cp.
+tree.pruned <- prune(tree, cp = bestcp)
+printcp(tree.pruned)
+# plot the pruned tree
+prp(tree.pruned,
+    faclen=0, #use full names for factor labels
+    extra=1, #display number of obs. for each terminal node
+    roundint=F, #don't round to integers in output
+    digits=5) #display 5 decimal places in output
+
+# variable importance
+tree.pruned$variable.importance
+summary(tree.pruned$variable.importance)
+```
+
+The generated tree shows that the recency is intensely linked to the technology type, which is a good sign. This can clearly be visualized with a cross table:
+
+```{r}
+crosstable(TechnologyData_Subset, c("technology"), by="tech_recency_corrected")
+```
+
+Let's check the performance the CART model.
+
+```{r}
+# predict using the test data
+predictions_CART <- predict(tree.pruned, data_test)
+
+
+# save the predictions of the CART
+pred_CART <- vector()
+
+for(i in 1:nrow(predictions_CART)){
+  if  (predictions_CART[i] >= 0.5){
+    pred_CART[i] = 0
+  } else {
+    pred_CART[i] = 1
+  }
+}
+pred_CART <- factor(pred_CART, levels = c(0, 1)) 
+
+# compute model accuracy
+accuracy_CART <- mean(pred_CART == data_test$tech_recency_corrected)
+
+# generate a confusion matrix
+CM_CART <- confusionMatrix(pred_CART, data_test$tech_recency_corrected, mode = "everything")
+CM_CART
+```
+
+Let's compute the CART model now without the technology variable.
+
+```{r}
+# we set the seed
+set.seed(123)
+
+# we make a new subset excluding the technology
+data_train_notech <- subset(data_train, select = -c(15))
+data_test_notech <- subset(data_test, select = -c(15))
+
+# step1: Begin with a small cp. 
+tree_notech <- rpart(tech_recency_corrected~., data = data_train_notech, method = "class",
+              control = rpart.control(cp = 0.0001), usesurrogate=2, surrogatestyle=0)
+
+# step2: Pick the tree size that minimizes misclassification rate (i.e. prediction error).
+# Prediction error rate in training data = Root node error * rel error * 100%
+# Prediction error rate in cross-validation = Root node error * xerror * 100%
+# Hence we want the cp value (with a simpler tree) that minimizes the xerror. 
+printcp(tree_notech)
+plotcp(tree_notech)
+
+# select the best tree
+bestcp_notech <- tree_notech$cptable[which.min(tree_notech$cptable[,"xerror"]),"CP"]
+
+# step3: Prune the tree using the best cp.
+tree.pruned_notech <- prune(tree_notech, cp = bestcp_notech)
+printcp(tree.pruned_notech)
+# plot the pruned tree
+prp(tree.pruned_notech,
+    faclen=0, #use full names for factor labels
+    extra=1, #display number of obs. for each terminal node
+    roundint=F, #don't round to integers in output
+    digits=5) #display 5 decimal places in output
+
+# variable importance
+tree.pruned_notech$variable.importance
+summary(tree.pruned_notech$variable.importance)
+```
+
+Let's check the performance the CART model without the technology variable.
+
+```{r}
+# predict using the test data
+predictions_CART_notech <- predict(tree.pruned_notech, data_test_notech)
+
+
+# save the predictions of the CART
+pred_CART_notech <- vector()
+
+for(i in 1:nrow(predictions_CART_notech)){
+  if  (predictions_CART_notech[i] >= 0.5){
+    pred_CART_notech[i] = 0
+  } else {
+    pred_CART_notech[i] = 1
+  }
+}
+pred_CART_notech <- factor(pred_CART_notech, levels = c(0, 1)) 
+
+# compute model accuracy
+accuracy_CART_notech <- mean(pred_CART_notech == data_test_notech$tech_recency_corrected)
+
+# generate a confusion matrix
+CM_CART_notech <- confusionMatrix(pred_CART_notech, data_test_notech$tech_recency_corrected, mode = "everything")
+CM_CART_notech
+```
+
+## Random Forest
+
+Let's adjust a random forest model.
+
+```{r}
+# set a random seed
+set.seed(123)
+
+# compute the random forest model
+rf <- randomForest(tech_recency_corrected~., data=data_train, importance=TRUE)
+rf
+
+# plot the model
+layout(matrix(c(1,2),nrow=1),
+       width=c(4,1)) 
+par(mar=c(5,4,4,0)) #No margin on the right side
+plot(rf, log="y")
+par(mar=c(5,0,4,2)) #No margin on the left side
+plot(c(0,1),type="n", axes=F, xlab="", ylab="")
+legend("top", colnames(rf$err.rate),col=1:3,cex=0.8,fill=1:3)
+
+# plot variable importance
+varImpPlot(rf)
+```
+
+Let's check the performance of the random forest obtained.
+
+```{r}
+# save the predictions of the random forest
+predictions_rf <- predict(rf, data_test, type="prob")
+pred_rf <- vector()
+
+for(i in 1:nrow(predictions_rf)){
+  if  (predictions_rf[i] >= 0.5){
+    pred_rf[i] = 0
+  } else {
+    pred_rf[i] = 1
+  }
+}
+pred_rf <- factor(pred_rf, levels = c(0, 1)) 
+
+# generate a confusion matrix
+CM_rf <- confusionMatrix(pred_rf, data_test$tech_recency_corrected, mode = "everything")
+CM_rf
+```
+
+Let's calculate the random forest without the variable technology to see if the important variables remain the same.
+
+```{r}
+# set a random seed
+set.seed(123)
+
+# compute the random forest model
+rf_notech <- randomForest(tech_recency_corrected~., data=data_train_notech, importance=TRUE)
+rf_notech
+
+# plot the model
+plot(rf_notech)
+
+# plot variable importance
+varImpPlot(rf_notech)
+importance(rf_notech, type=1)
+importance(rf_notech, type=2)
+```
+
+Let's check the performance of the random forest without the technology variable.
+
+```{r}
+# save the predictions of the random forest
+predictions_rf_notech <- predict(rf_notech, data_test_notech, type="prob")
+pred_rf_notech <- vector()
+
+for(i in 1:nrow(predictions_rf_notech)){
+  if  (predictions_rf_notech[i] >= 0.5){
+    pred_rf_notech[i] = 0
+  } else {
+    pred_rf_notech[i] = 1
+  }
+}
+pred_rf_notech <- factor(pred_rf_notech, levels = c(0, 1)) 
+
+# generate a confusion matrix
+CM_rf_notech <- confusionMatrix(pred_rf_notech, data_test$tech_recency_corrected, mode = "everything")
+CM_rf_notech
+```
+
+## Suport Vector Machine (SVM)
+
+In this section, a SVM model is implemented. Different kernels are tried for this purpose.
+
+### Linear kernel
+
+```{r}
+# set a random seed
+set.seed(123)
+
+# build the SVM model
+svm_linear <- ksvm(tech_recency_corrected~., data = data_train, kernel = "vanilladot")
+
+# show the result of the SVM model
+svm_linear
+```
+
+Let's check the performance of the SVM model with linear kernel:
+
+```{r}
+# predict using the test data
+predictions_SVMlin <- predict(svm_linear, data_test)
+
+# compute model accuracy
+accuracy_SVMlin <- mean(predictions_SVMlin == data_test$tech_recency_corrected)
+
+# generate a confusion matrix
+CM_SVMlin <- confusionMatrix(predictions_SVMlin, data_test$tech_recency_corrected, mode = "everything")
+CM_SVMlin
+```
+
+The accuracy obtained is very high (\>0.9), it could either be a sign of a good model or a sign that the data set is very biased in a way. In this case, we know that the variable technology is strongly correlated with the recency. For this reason, a first step to understand this would be removing it from the model and checking what the obtained result. This is done below:
+
+```{r}
+# set a random seed
+set.seed(123)
+
+# build the SVM model
+svm_linear_notech <- ksvm(tech_recency_corrected~., data = data_train_notech, kernel = "vanilladot")
+
+# show the result of the SVM model
+svm_linear_notech
+
+# predict using the test data
+predictions_SVMlin_notech <- predict(svm_linear_notech, data_test_notech)
+
+# compute model accuracy
+accuracy_SVMlin_notech <- mean(predictions_SVMlin_notech == data_test_notech$tech_recency_corrected)
+
+# generate a confusion matrix
+CM_SVMlin_notech <- confusionMatrix(predictions_SVMlin_notech, data_test$tech_recency_corrected, mode = "everything")
+CM_SVMlin_notech
+```
+
+### Gaussian kernel
+
+```{r}
+# set a random seed
+set.seed(123)
+
+# build the SVM model
+svm_gauss <- ksvm(tech_recency_corrected~., data = data_train, kernel = "rbfdot")
+
+# show the result of the SVM model
+svm_gauss
+```
+
+Let's check the performance of the SVM model with Gaussian kernel:
+
+```{r}
+# predict using the test data
+predictions_SVMgauss <- predict(svm_gauss, data_test)
+
+# compute model accuracy
+accuracy_SVMgauss <- mean(predictions_SVMgauss == data_test$tech_recency_corrected)
+
+# generate a confusion matrix
+CM_SVMgauss <- confusionMatrix(predictions_SVMgauss, data_test$tech_recency_corrected, mode = "everything")
+CM_SVMgauss
+```
+
+The accuracy obtained is very high (\>0.9), it could either be a sign of a good model or a sign that the data set is very biased in a way. In this case, we know that the variable technology is strongly correlated with the recency. For this reason, a first step to understand this would be removing it from the model and checking what the obtained result. This is done below:
+
+```{r}
+# set a random seed
+set.seed(123)
+
+# build the SVM model
+svm_gauss_notech <- ksvm(tech_recency_corrected~., data = data_train_notech, kernel = "rbfdot")
+
+# show the result of the SVM model
+svm_gauss_notech
+
+# predict using the test data
+predictions_SVMgauss_notech <- predict(svm_gauss_notech, data_test_notech)
+
+# compute model accuracy
+accuracy_SVMgauss_notech <- mean(predictions_SVMgauss_notech == data_test_notech$tech_recency_corrected)
+
+# generate a confusion matrix
+CM_SVMgauss_notech <- confusionMatrix(predictions_SVMgauss_notech, data_test$tech_recency_corrected, mode = "everything")
+CM_SVMgauss_notech
+```
+
+### Polynomial kernel
+
+```{r}
+# set a random seed
+set.seed(123)
+
+# build the SVM model
+svm_polynom <- ksvm(tech_recency_corrected~., data = data_train, kernel = "polydot")
+
+# show the result of the SVM model
+svm_polynom
+```
+
+Let's check the performance of the SVM model with polynomial kernel:
+
+```{r}
+# predict using the test data
+predictions_SVMpolynom <- predict(svm_polynom, data_test)
+
+# compute model accuracy
+accuracy_SVMpolynom <- mean(predictions_SVMpolynom == data_test$tech_recency_corrected)
+
+# generate a confusion matrix
+CM_SVMpolynom <- confusionMatrix(predictions_SVMpolynom, data_test$tech_recency_corrected)
+CM_SVMpolynom
+```
+
+The accuracy obtained is very high (\>0.9), it could either be a sign of a good model or a sign that the data set is very biased in a way. In this case, we know that the variable technology is strongly correlated with the recency. For this reason, a first step to understand this would be removing it from the model and checking what the obtained result. This is done below:
+
+```{r}
+# set a random seed
+set.seed(123)
+
+# build the SVM model
+svm_polynom_notech <- ksvm(tech_recency_corrected~., data = data_train_notech, kernel = "polydot")
+
+# show the result of the SVM model
+svm_polynom_notech
+
+# predict using the test data
+predictions_SVMpolynom_notech <- predict(svm_polynom_notech, data_test_notech)
+
+# compute model accuracy
+accuracy_SVMpolynom_notech <- mean(predictions_SVMpolynom_notech == data_test_notech$tech_recency_corrected)
+
+# generate a confusion matrix
+CM_SVMpolynom_notech <- confusionMatrix(predictions_SVMpolynom_notech, data_test$tech_recency_corrected)
+CM_SVMpolynom_notech
+```
+
+## Logistic Regression
+
+### Complete logistic regression
+
+Let's adjust a logistic regression model.
+
+```{r}
+# set a random seed
+set.seed(123)
+
+# compute logistic regression
+logreg <- glm(tech_recency_corrected~., data = data_train, family = "binomial")
+
+# show a summary and the coefficients of the model obtained
+summary(logreg)
+coef(logreg)
+```
+
+According to the results the following variables are significant in the logistic regression: "pubtypeReview", "openaccesstrue", "year", "authorcount", "journal-impact-score", "journal-sjr" and "ratio_citations".
+
+Let's check the performance of the logistic regression:
+
+```{r}
+
+# http://www.sthda.com/english/articles/36-classification-methods-essentials/151-logistic-regression-essentials-in-r/#multiple-logistic-regression
+
+# exclude a retracted paper from the data_test subset
+data_test2 <- subset(data_test,  pubtype != "Retracted")
+data_test2_notech <- subset(data_test2, select = -c(15))
+
+# predict using the test data
+prob_logreg <- logreg %>% predict(data_test2, type="response")
+pred_classes_logreg <- ifelse(prob_logreg> 0.5, "1", "0")
+pred_classes_logreg  <- factor(pred_classes_logreg, levels = c(0, 1)) 
+
+# compute model accuracy
+accuracy_logreg <- mean(pred_classes_logreg == data_test2$tech_recency_corrected)
+
+# generate a confusion matrix
+CM_logreg <- confusionMatrix(pred_classes_logreg, data_test2$tech_recency_corrected, mode = "everything")
+CM_logreg
+```
+
+Let's calculate the adjustment coefficient R\^2 for the model and run a goodness-of-fit test.
+
+```{r}
+pR2(logreg)
+```
+
+### Stepwise logistic regression
+
+Even though at first sight the model seems to be very good, it is somehow strange that the variable technology does not appear as significant, since we know it is very well correlated with the recency. For this reason, a stepwise approach is taken.
+
+```{r}
+# http://www.sthda.com/english/articles/36-classification-methods-essentials/150-stepwise-logistic-regression-essentials-in-r/
+# https://ashutoshtripathi.com/2019/06/10/what-is-stepaic-in-r/
+
+set.seed(123)
+logreg_step <- logreg %>% stepAIC(trace = FALSE)
+coef(logreg_step)
+```
+
+Let's calculate the adjustment coefficient R\^2 for the stepwise model and run a goodness-of-fit test.
+
+```{r}
+pR2(logreg_step)
+```
+
+Once the stepwise model has been computed, its performance can be computed.
+
+```{r}
+
+# performance of stepwise logistic regression
+
+# predict using the test data
+prob_logreg_step <- logreg_step %>% predict(data_test2, type="response")
+pred_classes_logreg_step <- ifelse(prob_logreg_step> 0.5, "1", "0")
+pred_classes_logreg_step  <- factor(pred_classes_logreg_step, levels = c(0, 1)) 
+
+# compute model accuracy
+accuracy_logreg_step <- mean(pred_classes_logreg_step == data_test2$tech_recency_corrected)
+
+# generate a confusion matrix
+CM_logreg_step <- confusionMatrix(pred_classes_logreg_step, data_test2$tech_recency_corrected, mode = "everything")
+CM_logreg_step
+
+```
+
+### Logistic regression only with the variables considered as significant
+
+According to the results obtained, most of the variables of the initial model have been kept, even quite some of the ones that did not appear as significant (p\<0.05) initially. For this reason, it might be interesting to see what the model output is when only considering the significant variables as obtained in the first logistic regression.
+
+```{r}
+
+# set a random seed
+set.seed(123)
+
+# compute logistic regression
+logreg_signif <- glm(tech_recency_corrected ~ pubtype + openaccess + year + authorcount + journal_impact_score + journal_sjr  + ratio_citations, data = data_train, family = "binomial")
+
+# show a summary and the coefficients of the model obtained
+summary(logreg_signif)
+coef(logreg_signif)
+
+```
+
+Once the reduced model has been computed, its performance can be computed.
+
+```{r}
+# performance of the reduced logistic regression
+
+# predict using the test data
+prob_logreg_signif <- logreg_signif %>% predict(data_test2, type="response")
+pred_classes_logreg_signif <- ifelse(prob_logreg_signif> 0.5, "1", "0")
+pred_classes_logreg_signif  <- factor(pred_classes_logreg_signif, levels = c(0, 1)) 
+
+# compute model accuracy
+accuracy_logreg_signif <- mean(pred_classes_logreg_signif == data_test2$tech_recency_corrected)
+
+# generate a confusion matrix
+CM_logreg_signif <- confusionMatrix(pred_classes_logreg_signif, data_test2$tech_recency_corrected, mode = "everything")
+CM_logreg_signif
+```
+
+### Logistic regression without the technology variable
+
+```{r}
+
+# set a random seed
+set.seed(123)
+
+# compute logistic regression
+logreg_notech <- glm(tech_recency_corrected ~ ., data = data_train_notech, family = "binomial")
+
+# show a summary and the coefficients of the model obtained
+summary(logreg_notech)
+coef(logreg_notech)
+
+```
+
+```{r}
+# performance of the logistic regression without technology
+
+# predict using the test data
+prob_logreg_notech <- logreg_notech %>% predict(data_test2, type="response")
+pred_classes_logreg_notech <- ifelse(prob_logreg_notech> 0.5, "1", "0")
+pred_classes_logreg_notech  <- factor(pred_classes_logreg_notech, levels = c(0, 1)) 
+
+# compute model accuracy
+accuracy_logreg_notech <- mean(pred_classes_logreg_notech == data_test2_notech$tech_recency_corrected)
+
+# generate a confusion matrix
+CM_logreg_notech <- confusionMatrix(pred_classes_logreg_notech, data_test2_notech$tech_recency_corrected, mode = "everything")
+CM_logreg_notech
+```
+
+## Comparing model performance
+
+### ROC curves and AUC values for the tested models
+
+Let's generate the ROC curve and compute the AUC value.
+
+We start with the ROC curve:
+
+```{r}
+# set a random seed
+set.seed(123)
+
+# when using the pROC package, both the predictions and the real data must be converted to numeric variables
+data_test$tech_recency_corrected <- as.numeric(data_test$tech_recency_corrected)
+data_test2$tech_recency_corrected <- as.numeric(data_test2$tech_recency_corrected)
+pred_CART <- as.numeric(pred_CART)
+pred_CART_notech <- as.numeric(pred_CART_notech)
+predictions_SVMlin <- as.numeric(predictions_SVMlin)
+predictions_SVMlin_notech <- as.numeric(predictions_SVMlin_notech)
+predictions_SVMgauss <- as.numeric(predictions_SVMgauss)
+predictions_SVMgauss_notech <- as.numeric(predictions_SVMgauss_notech)
+predictions_SVMpolynom <- as.numeric(predictions_SVMpolynom)
+predictions_SVMpolynom_notech <- as.numeric(predictions_SVMpolynom_notech)
+pred_rf <- as.numeric(pred_rf)
+pred_rf_notech <- as.numeric(pred_rf_notech)
+pred_classes_logreg <- as.numeric(pred_classes_logreg)
+pred_classes_logreg_step <- as.numeric(pred_classes_logreg_step)
+pred_classes_logreg_notech <- as.numeric(pred_classes_logreg_notech)
+
+# obtain the ROC curves for the model predictions
+par(mfrow=c(4,3))
+ROC_CART<-roc(data_test$tech_recency_corrected, pred_CART, plot=TRUE, main="CART")
+ROC_CART_notech<-roc(data_test$tech_recency_corrected, pred_CART_notech, plot=TRUE, main="CART (Excl. tech.)")
+ROC_SVMlin <-roc(data_test$tech_recency_corrected, predictions_SVMlin, plot=TRUE, main="SVM - Linear kernel")
+ROC_SVMlin_notech <-roc(data_test$tech_recency_corrected, predictions_SVMlin_notech, plot=TRUE, main="SVM - Linear kernel (Excl. tech.)")
+ROC_SVMgauss <-roc(data_test$tech_recency_corrected, predictions_SVMgauss, plot=TRUE, main="SVM - Gauss RBF kernel")
+ROC_SVMgauss_notech <-roc(data_test$tech_recency_corrected, predictions_SVMgauss_notech, plot=TRUE, main="SVM - Gauss RBF kernel (Excl. tech.)")
+ROC_SVMpolynom <-roc(data_test$tech_recency_corrected, predictions_SVMpolynom, plot=TRUE, main="SVM - Polynom. kernel")
+ROC_SVMpolynom_notech <-roc(data_test$tech_recency_corrected, predictions_SVMpolynom_notech, plot=TRUE, main="SVM - Polynom. kernel (Excl. tech.)")
+ROC_rf <-roc(data_test$tech_recency_corrected, pred_rf, plot=TRUE, main="RF")
+ROC_rf_notech <-roc(data_test$tech_recency_corrected, pred_rf_notech, plot=TRUE, main="RF (Excl. tech)")
+ROC_logreg <-roc(data_test2$tech_recency_corrected, pred_classes_logreg, plot=TRUE, main="Log. reg.")
+# ROC_logreg_step <-roc(data_test2$tech_recency_corrected, pred_classes_logreg_step, plot=TRUE, main="Stepwise log. reg.")
+ROC_logreg_notech <-roc(data_test2$tech_recency_corrected, pred_classes_logreg_notech, plot=TRUE, main="Log. reg. (Excl. tech.)")
+```
+
+Afterwards, the AUC values can be computed based on the obtained ROC curves:
+
+```{r}
+# set a random seed
+set.seed(123)
+
+# compute the AUC value for the predictions of the model
+AUC_CART <-auc(ROC_CART)
+AUC_CART_notech <-auc(ROC_CART_notech)
+AUC_SVMlin <-auc(ROC_SVMlin)
+AUC_SVMlin_notech <-auc(ROC_SVMlin_notech)
+AUC_SVMgauss <- auc(ROC_SVMgauss)
+AUC_SVMgauss_notech <- auc(ROC_SVMgauss_notech)
+AUC_SVMpolynom <- auc(ROC_SVMpolynom)
+AUC_SVMpolynom_notech <- auc(ROC_SVMpolynom_notech)
+AUC_rf <- auc(ROC_rf)
+AUC_rf_notech <- auc(ROC_rf_notech)
+AUC_logreg <- auc(ROC_logreg)
+# AUC_logreg_step <- auc(ROC_logreg_step)
+AUC_logreg_notech <- auc(ROC_logreg_notech)
+```
+
+
+
+# Other visuals and calculations
+
+
+```{r}
+# a<-ggplot(TechnologyData_Subset, aes(x=abstract_length)) + 
+#   geom_histogram() + labs(y = "# of publications", x = "Length", title = "Abstract length")
+# a
+# 
+# b<-ggplot(TechnologyData_Subset, aes(x=authorcount)) + 
+#   geom_histogram() + labs(y = "# of publications", x = "Number of authors", title = "Author count")
+# b
+# 
+# c<-ggplot(TechnologyData_Subset, aes(x=journal_h_index)) + 
+#   geom_histogram() + labs(y = "# of publications", x = "Value of the index", title = "Journal h-index")
+# c
+# 
+# d<-ggplot(TechnologyData_Subset, aes(x=journal_impact_score)) + 
+#   geom_histogram() + labs(y = "# of publications", x = "Value of the score", title = "Journal impact score")
+# d
+# 
+# e<-ggplot(TechnologyData_Subset, aes(x=journal_impact_score)) + 
+#   geom_histogram() + labs(y = "# of publications", x = "# in the ranking", title = "Journal overall ranking")
+# e
+# 
+# f<-ggplot(TechnologyData_Subset, aes(x=journal_sjr)) + 
+#   geom_histogram() + labs(y = "# of publications", x = "Value of the indicator", title = "Journal SJR indicator")
+# f
+# 
+# g<-ggplot(TechnologyData_Subset, aes(x=number_affiliations)) + 
+#   geom_histogram() + labs(y = "# of publications", x = "Number", title = "Number of affiliations")
+# g
+# 
+# h<-ggplot(TechnologyData_Subset, aes(x=number_keywords)) + 
+#   geom_histogram() + labs(y = "# of publications", x = "Number", title = "Number of keywords")
+# h
+# 
+# i<-ggplot(TechnologyData_Subset, aes(x=ratio_citations)) + 
+#   geom_histogram() + labs(y = "# of publications", x = "Ratio", title = "Ratio of citations")
+# i
+# 
+# j<-ggplot(TechnologyData_Subset, aes(x=timescited)) + 
+#   geom_histogram() + labs(y = "# of publications", x = "# of times cited", title = "Amount of citations")
+# j
+# 
+# k<-ggplot(TechnologyData_Subset, aes(x=title_length)) + 
+#   geom_histogram() + labs(y = "# of publications", x = "Length", title = "Title length")
+# k
+# 
+# l<-ggplot(TechnologyData_Subset, aes(x=year)) + 
+#   geom_histogram() + labs(y = "# of publications", x = "Year", title = "Publication year")
+# l
+```
+
+```{r}
+# require(gridExtra)
+# grid.arrange(a, b, c, d, e, f, g, h, i, j, k, l, ncol=3)
+```
+
+```{r}
+# w <- ggplot(data = TechnologyData_Subset, aes( x = reorder(pubtype,pubtype,function(x) length(x)))) + geom_bar() + labs(y = "# of publications", x="", title = "Publication type") + coord_flip()
+# w
+# 
+# x <- ggplot(data = TechnologyData_Subset, aes( x = reorder(openaccess,openaccess,function(x) length(x)))) + geom_bar() + labs(y = "# of publications", x="", title = "Open access?") + coord_flip()
+# x
+# 
+# y <- ggplot(data = TechnologyData_Subset, aes( x = reorder(technology,technology,function(x) length(x)))) + geom_bar() + labs(y = "# of publications", x="", title = "Technology") + coord_flip()
+# y
+# 
+# z <- ggplot(data = TechnologyData_Subset, aes( x = reorder(tech_recency_corrected,tech_recency_corrected,function(x) length(x)))) + geom_bar() + labs(y = "# of publications", x="", title = "Recency") + coord_flip()
+# z
+```
+
+```{r}
+# grid.arrange(w, x, y, z, ncol=2)
+```
+
+```{r}
+# TechnologyData_Subset %>% group_by(technology) %>% summarise(Percentage=n()/nrow(.))
+```
+
+```{r}
+# varimp_logreg <- varImp(logreg_notech, scale=TRUE)
+# varimp_cart <- varImp(tree_notech, scale=TRUE)
+# varimp_rf <- varImp(rf_notech, scale=TRUE)
+```
+
+```{r}
+# # variable importance for gaussian kernel svm without technology
+# set.seed(123)
+# 
+# # run the model
+# M_rbfdot <- fit(tech_recency_corrected~., data=data_train_notech, model="ksvm", kernel="rbfdot")
+# 
+# # predict using the test data
+# predictions_rbfdot <- predict(M_rbfdot, data_train_notech, type="prob")
+# # save the predictions
+# pred_rbfdot <- vector()
+# for(i in 1:nrow(predictions_rbfdot)){
+#   if  (predictions_rbfdot[i] >= 0.5){
+#     pred_rbfdot[i] = 0
+#   } else {
+#     pred_rbfdot[i] = 1
+#   }
+# }
+# pred_rbfdot <- factor(pred_rbfdot, levels = c(0, 1)) 
+# # generate a confusion matrix
+# CM_rbfdot <- confusionMatrix(pred_rbfdot, data_train_notech$tech_recency_corrected, mode = "everything")
+# CM_rbfdot
+# 
+# 
+# # calculate variable importance
+# svm.imp_rbfdot <- Importance(M_rbfdot, data=data_train_notech, method="sensv")
+# print(round(svm.imp_rbfdot$imp,digits=2))
+# ```
+# ```{r}
+# # variable importance for linear kernel svm without technology
+# set.seed(123)
+# library(rminer)
+# 
+# # run the model
+# M_lin <- fit(tech_recency_corrected~., data=data_train_notech, model="ksvm", kernel="vanilladot")
+# 
+# # predict using the test data
+# predictions_lin <- predict(M_lin, data_train_notech, type="prob")
+# # save the predictions
+# pred_lin <- vector()
+# for(i in 1:nrow(predictions_lin)){
+#   if  (predictions_lin[i] >= 0.5){
+#     pred_lin[i] = 0
+#   } else {
+#     pred_lin[i] = 1
+#   }
+# }
+# pred_lin <- factor(pred_lin, levels = c(0, 1)) 
+# # generate a confusion matrix
+# CM_lin <- confusionMatrix(pred_lin, data_train_notech$tech_recency_corrected, mode = "everything")
+# CM_lin
+# 
+# 
+# # calculate variable importance
+# svm.imp_lin <- Importance(M_lin, data=data_train_notech, method="sensv")
+# print(round(svm.imp_lin$imp,digits=2))
+```
+

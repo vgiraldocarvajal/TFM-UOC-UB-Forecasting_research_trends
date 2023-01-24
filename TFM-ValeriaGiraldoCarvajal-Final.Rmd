@@ -137,7 +137,7 @@ searchByString <- function(string, content = "complete", myStart = 0, retCount =
 		stop("Invalid content value. Valid content values are 'complete', and 'standard'")
 	}
 	else {
-		key <- "55fe4bf5db6afca7a17bde084e5dc77a"
+		key <- "YOUR API KEY HERE"
 		print("Retrieving records.")
 		theURL <- httr::GET("https://api.elsevier.com/content/search/scopus", query = list(apiKey = key, query = string, sort = mySort, httpAccept = "application/xml", view = content, count = retCount, start = myStart, cursor = cursor)) ## format the URL to be sent to the API
 		httr::stop_for_status(theURL) ## pass any HTTP errors to the R console
